@@ -58,6 +58,12 @@ class HeartbeatService : Service() {
         @Volatile
         var onVolumeOverride: (() -> Unit)? = null
 
+        /** RK 定时开关机星期编码: 0=每天, 1=周日, 2=周一 … 7=周六 */
+        val WEEK_NAMES_RK = mapOf(
+            "0" to "每天", "1" to "周日", "2" to "周一", "3" to "周二",
+            "4" to "周三", "5" to "周四", "6" to "周五", "7" to "周六",
+        )
+
         fun start(context: Context) {
             val intent = Intent(context, HeartbeatService::class.java)
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -198,8 +204,11 @@ class HeartbeatService : Service() {
                         ackAsync(id, "success", "已上传")
                         return
                     } else {
-                        result = "failed"
-                        message = "播放页未运行, 无法截图"
+                        // 播放页未运行: 自动拉起播放页, 指令保持待下发, 下一次心跳自动重试截图
+                        startActivitySafely(Intent(this, PlayerActivity::class.java)
+                            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK))
+                        AppLog.w("Heartbeat", "播放页未运行, 已拉起播放页, 截图指令将在下次心跳重试")
+                        return // 不回执, 指令保持 pending 待重试
                     }
                 }
                 "set_volume" -> {
@@ -216,12 +225,46 @@ class HeartbeatService : Service() {
                     brightnessApplier?.invoke(b)
                     message = "亮度指令已提交 ($b%)"
                 }
-                "reboot", "shutdown" -> {
-                    // 普通应用无权限重启设备, 尝试交由系统处理; 失败则回退为重启 APK
-                    result = "failed"
-                    message = "需系统签名/Device Owner 权限, 已回退重启播放页"
-                    startActivitySafely(Intent(this, PlayerActivity::class.java)
-                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK))
+                "set_power_schedule" -> {
+                    // RK 平台定时开关机 (由 system/app/shuttime.apk 接收系统广播实现)
+                    // value JSON: {onHour, onMin, offHour, offMin, week(0=每天,1=周日..7=周六), enable}
+                    val v = JSONObject(value.ifBlank { "{}" })
+                    val week = v.optString("week", "0")
+                    val enable = v.optBoolean("enable", true)
+                    val onH = v.optString("onHour", "08"); val onM = v.optString("onMin", "00")
+                    val offH = v.optString("offHour", "22"); val offM = v.optString("offMin", "30")
+                    sendBroadcast(Intent("rk.android.turnontime.action").apply {
+                        putExtra("onHour", onH); putExtra("onMin", onM)
+                        putExtra("onWeek", week); putExtra("enable", enable)
+                    })
+                    sendBroadcast(Intent("rk.android.turnofftime.action").apply {
+                        putExtra("offHour", offH); putExtra("offMin", offM)
+                        putExtra("offWeek", week); putExtra("enable", enable)
+                    })
+                    val weekName = WEEK_NAMES_RK[week] ?: week
+                    message = if (enable) "定时开关机已设置: $onH:$onM 开机 / $offH:$offM 关机 ($weekName)"
+                              else "定时开关机已取消 ($weekName)"
+                    AppLog.i("Heartbeat", message ?: "")
+                }
+                "reboot", "shutdown", "sleep", "wakeup" -> {
+                    // RK 平台系统级广播 (ads.android.* / rk.android.*)
+                    // 危险指令: 先回执再执行, 避免设备断电后指令永远停在 pending
+                    val (action, desc) = when (type) {
+                        "reboot" -> "ads.android.setreboot.action" to "重启广播已发送"
+                        "shutdown" -> "ads.android.setpoweroff.action" to "关机广播已发送"
+                        "sleep" -> "rk.android.realsleepmode.action" to "休眠广播已发送"
+                        else -> "rk.android.wakeupmode.action" to "唤醒广播已发送"
+                    }
+                    if (type == "wakeup") {
+                        // 唤醒无副作用, 常规回执即可
+                        sendBroadcast(Intent(action))
+                        message = desc
+                    } else {
+                        AppLog.i("Heartbeat", "$desc ($action), 指令 #$id 已回执")
+                        ackAsync(id, "success", desc).join(3000) // 等回执发出再断电
+                        sendBroadcast(Intent(action))
+                        return // 已回执, 不走统一回执
+                    }
                 }
                 else -> {
                     result = "failed"
@@ -246,15 +289,17 @@ class HeartbeatService : Service() {
         }
     }
 
-    private fun ackAsync(id: Int, result: String, message: String) {
-        Thread {
+    private fun ackAsync(id: Int, result: String, message: String): Thread {
+        val t = Thread {
             try {
                 ApiClient.post("/api/device/command/ack", JSONObject()
                     .put("id", id).put("result", result).put("message", message))
             } catch (e: Exception) {
                 AppLog.e("Heartbeat", "指令回执失败 #$id", e)
             }
-        }.start()
+        }
+        t.start()
+        return t
     }
 
     // ===== 硬件信息 (需求 5.2.8) =====

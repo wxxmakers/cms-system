@@ -7,7 +7,7 @@
           <el-button type="primary" @click="loadAudit">查询</el-button>
         </div>
         <el-table :data="auditList" v-loading="auditLoading" stripe border>
-          <el-table-column prop="id" label="#" width="70" />
+          <el-table-column type="index" label="#" width="70" :index="(i) => (auditQuery.page - 1) * auditQuery.pageSize + i + 1" />
           <el-table-column prop="username" label="操作人" width="110" />
           <el-table-column prop="action" label="操作" width="130" />
           <el-table-column prop="target" label="对象" min-width="160" show-overflow-tooltip />
@@ -32,7 +32,7 @@
           </el-radio-group>
         </div>
         <el-table :data="loginList" v-loading="loginLoading" stripe border>
-          <el-table-column prop="id" label="#" width="70" />
+          <el-table-column type="index" label="#" width="70" :index="(i) => (loginQuery.page - 1) * loginQuery.pageSize + i + 1" />
           <el-table-column prop="username" label="账号" width="150" />
           <el-table-column label="类型" width="90">
             <template #default="{ row }">

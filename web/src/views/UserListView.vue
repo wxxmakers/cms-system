@@ -6,7 +6,7 @@
     </div>
 
     <el-table :data="users" v-loading="loading" stripe>
-      <el-table-column prop="id" label="ID" width="60" />
+      <el-table-column type="index" label="#" width="60" />
       <el-table-column prop="username" label="账号" width="140" />
       <el-table-column prop="displayName" label="姓名" width="140" />
       <el-table-column label="角色" width="120">

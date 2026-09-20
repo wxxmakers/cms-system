@@ -59,11 +59,13 @@ async function sweep() {
   }
 }
 
-// 历史数据清理: 心跳采样保留 90 天 (需求 10)
+// 历史数据清理: 心跳采样保留 90 天 (需求 10), 指令历史保留 30 天
 async function cleanup() {
   try {
-    const cutoff = Date.now() - 90 * 24 * 3600 * 1000;
-    await db('heartbeat_logs').where('ts', '<', cutoff).del();
+    const pad = (x) => String(x).padStart(2, '0');
+    const fmt = (d) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+    await db('heartbeat_logs').where('ts', '<', Date.now() - 90 * 24 * 3600 * 1000).del();
+    await db('commands').where('created_at', '<', fmt(new Date(Date.now() - 30 * 24 * 3600 * 1000))).del();
   } catch (e) {
     console.error('[cleanup]', e.message);
   }

@@ -12,7 +12,7 @@
     </div>
 
     <el-table :data="list" v-loading="loading" stripe>
-      <el-table-column prop="id" label="ID" width="60" />
+      <el-table-column type="index" label="#" width="60" :index="seqIndex" />
       <el-table-column prop="device_name" label="设备名称" min-width="140" show-overflow-tooltip />
       <el-table-column prop="username" label="设备账号" width="130" class-name="mono" />
       <el-table-column prop="groupName" label="分组" width="110" />
@@ -179,6 +179,11 @@ const importRows = ref([])
 const detailVisible = ref(false)
 const detail = ref(null)
 const timeline = ref([])
+
+// 分页连续序号 (第2页从 11 开始而不是重新从 1)
+function seqIndex(i) {
+  return (query.page - 1) * query.pageSize + i + 1
+}
 
 async function load() {
   loading.value = true

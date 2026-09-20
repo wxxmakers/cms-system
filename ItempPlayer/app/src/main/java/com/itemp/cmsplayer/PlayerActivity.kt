@@ -88,6 +88,13 @@ class PlayerActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // 广告机模式: 拦截返回键, 播放页不允许被退出 (需求: 7x24 无人值守播放)
+        // 退出请通过 长按5秒 → 隐藏设置 → 退出登录
+        onBackPressedDispatcher.addCallback(this, object : androidx.activity.OnBackPressedCallback(true) {
+            override fun handleOnBackPressed() {
+                AppLog.i("Player", "返回键已被拦截 (广告机模式)")
+            }
+        })
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         applyBrightness(80)
         enterImmersive()

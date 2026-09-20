@@ -152,7 +152,7 @@ router.post('/import', async (req, res, next) => {
 });
 
 // ===== 远程控制指令下发 (需求 5.1.7) =====
-const CMD_TYPES = ['restart_app', 'refresh_playlist', 'clear_cache', 'screenshot', 'set_volume', 'set_brightness', 'reboot', 'shutdown'];
+const CMD_TYPES = ['restart_app', 'refresh_playlist', 'clear_cache', 'screenshot', 'set_volume', 'set_brightness', 'set_power_schedule', 'reboot', 'shutdown', 'sleep', 'wakeup'];
 router.post('/:id/command', async (req, res, next) => {
   try {
     const d = await db('devices').where({ id: req.params.id }).whereNull('deleted_at').first();
@@ -170,6 +170,17 @@ router.get('/:id/commands', async (req, res, next) => {
   try {
     const rows = await db('commands').where({ device_id: req.params.id }).orderBy('id', 'desc').limit(50);
     return res.json(ok(rows));
+  } catch (e) { next(e); }
+});
+
+// ===== 清空指令历史 =====
+router.delete('/:id/commands', async (req, res, next) => {
+  try {
+    const d = await db('devices').where({ id: req.params.id }).whereNull('deleted_at').first();
+    if (!d) return res.status(404).json(fail('设备不存在'));
+    const n = await db('commands').where({ device_id: d.id }).del();
+    audit(req, '清空指令历史', `device:${d.device_name}`, `删除 ${n} 条`);
+    return res.json(ok({ deleted: n }, `已清空 ${n} 条指令记录`));
   } catch (e) { next(e); }
 });
 

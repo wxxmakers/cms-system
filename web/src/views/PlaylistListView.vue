@@ -6,7 +6,7 @@
     </div>
 
     <el-table :data="list" v-loading="loading" stripe>
-      <el-table-column prop="id" label="ID" width="60" />
+      <el-table-column type="index" label="#" width="60" />
       <el-table-column prop="name" label="节目单名称" min-width="160" />
       <el-table-column prop="itemCount" label="素材数" width="80" />
       <el-table-column prop="version" label="版本" width="70" />

@@ -11,7 +11,7 @@
       :title="`检测到 ${conflicts.length} 组同优先级排期时间/目标重叠: ${conflicts.map((c) => `${c.a.name} ↔ ${c.b.name}`).join('; ')}`" />
 
     <el-table :data="list" v-loading="loading" stripe>
-      <el-table-column prop="id" label="ID" width="55" />
+      <el-table-column type="index" label="#" width="55" />
       <el-table-column prop="name" label="排期名称" min-width="150" show-overflow-tooltip />
       <el-table-column label="优先级" width="90">
         <template #default="{ row }">
