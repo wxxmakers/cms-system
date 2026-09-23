@@ -38,6 +38,9 @@ const config = {
 
 config.r2.enabled = !!(config.r2.accountId && config.r2.bucket && config.r2.accessKeyId && config.r2.secretAccessKey);
 
+// SQLite 默认落到 DATA_DIR (PaaS 持久盘), 保证随数据目录持久化
+config.db.file = process.env.DB_FILE || path.join(config.dataDir, 'cms.sqlite');
+
 fs.mkdirSync(config.dataDir, { recursive: true });
 fs.mkdirSync(path.join(config.uploadsDir, 'videos'), { recursive: true });
 fs.mkdirSync(path.join(config.uploadsDir, 'covers'), { recursive: true });
