@@ -47,9 +47,15 @@ router.post('/login', async (req, res, next) => {
     lockout.recordSuccess('admin', username);
     await writeLog(true, '登录成功');
     const tokens = signAdminTokens(user);
+    let perms = null;
+    if (user.permissions) { try { perms = JSON.parse(user.permissions); } catch { perms = null; } }
     return res.json(ok({
       ...tokens,
-      user: { id: user.id, username: user.username, displayName: user.display_name, role: user.role },
+      user: {
+        id: user.id, username: user.username, displayName: user.display_name, role: user.role,
+        tenantId: user.tenant_id || null,
+        permissions: Array.isArray(perms) ? perms : null,
+      },
     }));
   } catch (e) { next(e); }
 });
@@ -71,7 +77,12 @@ router.post('/refresh', async (req, res, next) => {
 // 当前用户信息
 router.get('/me', authMiddleware, async (req, res) => {
   const user = await db('users').where({ id: req.auth.id }).first();
-  return res.json(ok({ id: user.id, username: user.username, displayName: user.display_name, role: user.role }));
+  let perms = null;
+  if (user.permissions) { try { perms = JSON.parse(user.permissions); } catch { perms = null; } }
+  return res.json(ok({
+    id: user.id, username: user.username, displayName: user.display_name, role: user.role,
+    tenantId: user.tenant_id || null, permissions: Array.isArray(perms) ? perms : null,
+  }));
 });
 
 // 修改自己的密码
@@ -96,8 +107,10 @@ const requireSuper = [authMiddleware, (req, res, next) => (req.auth.role === 'su
 
 router.get('/users', ...requireSuper, async (req, res, next) => {
   try {
-    const users = await db('users').select('id', 'username', 'display_name as displayName', 'role', 'status', 'created_at as createdAt').orderBy('id');
-    return res.json(ok(users));
+    const users = await db('users').select('id', 'username', 'display_name as displayName', 'role', 'status', 'tenant_id as tenantId', 'created_at as createdAt').orderBy('id');
+    const tenants = await db('tenants');
+    const tmap = {}; tenants.forEach((t) => { tmap[t.id] = t.name; });
+    return res.json(ok(users.map((u) => ({ ...u, tenantName: u.tenantId ? (tmap[u.tenantId] || null) : null }))));
   } catch (e) { next(e); }
 });
 
@@ -105,14 +118,21 @@ router.post('/users', ...requireSuper, async (req, res, next) => {
   try {
     const { username, password, displayName, role } = req.body || {};
     if (!username || !password || String(password).length < 6) return res.status(400).json(fail('账号必填且密码至少 6 位'));
-    const roles = ['super_admin', 'operator', 'auditor', 'advertiser'];
+    const roles = ['super_admin', 'operator', 'auditor', 'advertiser', 'tenant_admin', 'customer'];
     if (!roles.includes(role)) return res.status(400).json(fail('角色不合法'));
     const exists = await db('users').where({ username }).first();
     if (exists) return res.status(400).json(fail('账号已存在'));
+    let tid = null;
+    if (role === 'tenant_admin') {
+      if (!req.body?.tenantId) return res.status(400).json(fail('租户管理员必须选择所属租户'));
+      const t = await db('tenants').where({ id: Number(req.body.tenantId), status: 'active' }).first();
+      if (!t) return res.status(400).json(fail('所选租户不存在'));
+      tid = t.id;
+    }
     const [id] = await db('users').insert({
-      username, password: await bcrypt.hash(password, 10), display_name: displayName || username, role,
+      username, password: await bcrypt.hash(password, 10), display_name: displayName || username, role, tenant_id: tid,
     });
-    audit(req, '新增用户', `user:${username}`, `role=${role}`);
+    audit(req, '新增用户', `user:${username}`, `role=${role}${tid ? ` tenant#${tid}` : ''}`);
     return res.json(ok({ id }));
   } catch (e) { next(e); }
 });
@@ -127,7 +147,22 @@ router.put('/users/:id', ...requireSuper, async (req, res, next) => {
     }
     const patch = { updated_at: new Date() };
     if (displayName != null) patch.display_name = displayName;
-    if (role != null && ['super_admin', 'operator', 'auditor', 'advertiser'].includes(role)) patch.role = role;
+    if (role != null && ['super_admin', 'operator', 'auditor', 'advertiser', 'tenant_admin', 'customer'].includes(role)) {
+      if (target.id === req.auth.id && role !== target.role) {
+        return res.status(400).json(fail('不能修改自己的角色'));
+      }
+      patch.role = role;
+      // 角色调整时同步租户绑定
+      if (role === 'tenant_admin') {
+        if (!req.body?.tenantId) return res.status(400).json(fail('租户管理员必须选择所属租户'));
+        const t = await db('tenants').where({ id: Number(req.body.tenantId), status: 'active' }).first();
+        if (!t) return res.status(400).json(fail('所选租户不存在'));
+        patch.tenant_id = t.id;
+      } else {
+        patch.tenant_id = null; // 调离租户管理员时解除绑定
+        patch.permissions = null;
+      }
+    }
     if (status != null && ['active', 'disabled'].includes(status)) patch.status = status;
     await db('users').where({ id: target.id }).update(patch);
     audit(req, '编辑用户', `user:${target.username}`, JSON.stringify(patch));
@@ -135,13 +170,39 @@ router.put('/users/:id', ...requireSuper, async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
+// ===== 删除用户 (误建账号清理; 内容归属租户不受影响) =====
+router.delete('/users/:id', ...requireSuper, async (req, res, next) => {
+  try {
+    const target = await db('users').where({ id: req.params.id }).first();
+    if (!target) return res.status(404).json(fail('用户不存在'));
+    if (target.id === req.auth.id) return res.status(400).json(fail('不能删除自己'));
+    if (target.role === 'super_admin') {
+      const admins = await db('users').where({ role: 'super_admin', status: 'active' }).count('* as c').first();
+      if (admins.c <= 1) return res.status(400).json(fail('系统至少保留一名超级管理员'));
+    }
+    if (target.role === 'tenant_admin' && target.tenant_id) {
+      const others = await db('users').where({ tenant_id: target.tenant_id, role: 'tenant_admin' }).whereNot({ id: target.id }).count('* as c').first();
+      if (others.c === 0) {
+        const devices = await db('devices').where({ tenant_id: target.tenant_id }).whereNull('deleted_at').count('* as c').first();
+        if (devices.c > 0) return res.status(400).json(fail('该租户还有 ' + devices.c + ' 台设备, 请先转移设备或为租户指定新管理员'));
+      }
+    }
+    await db('users').where({ id: target.id }).del();
+    audit(req, '删除用户', `user:${target.username}`, `role=${target.role}`);
+    return res.json(ok(null, '已删除'));
+  } catch (e) { next(e); }
+});
+
 router.post('/users/:id/reset-password', ...requireSuper, async (req, res, next) => {
   try {
     const target = await db('users').where({ id: req.params.id }).first();
     if (!target) return res.status(404).json(fail('用户不存在'));
-    const pwd = Math.random().toString(36).slice(-8) + 'A1';
+    // 支持自定义密码; 留空则自动生成
+    const custom = typeof req.body?.password === 'string' ? req.body.password.trim() : '';
+    if (custom && custom.length < 6) return res.status(400).json(fail('密码长度至少 6 位'));
+    const pwd = custom || (Math.random().toString(36).slice(-8) + 'A1');
     await db('users').where({ id: target.id }).update({ password: await bcrypt.hash(pwd, 10), updated_at: new Date() });
-    audit(req, '重置用户密码', `user:${target.username}`);
+    audit(req, '重置用户密码', `user:${target.username}`, custom ? '自定义密码' : '自动生成');
     return res.json(ok({ password: pwd }));
   } catch (e) { next(e); }
 });

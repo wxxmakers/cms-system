@@ -32,21 +32,8 @@
 > Task :app:validateSigningDebug UP-TO-DATE
 > Task :app:writeDebugAppMetadata UP-TO-DATE
 > Task :app:writeDebugSigningConfigVersions UP-TO-DATE
-
 > Task :app:compileDebugKotlin
-w: file:///D:/Bill/Android_Studio/2026/CMS-System/ItempPlayer/app/src/main/java/com/itemp/cmsplayer/heart/HeartbeatService.kt:179:23 Variable 'message' initializer is redundant
-w: file:///D:/Bill/Android_Studio/2026/CMS-System/ItempPlayer/app/src/main/java/com/itemp/cmsplayer/heart/HeartbeatService.kt:202:25 The value '"截图任务已提交"' assigned to 'var message: String defined in com.itemp.cmsplayer.heart.HeartbeatService.handleCommand' is never used
-w: file:///D:/Bill/Android_Studio/2026/CMS-System/ItempPlayer/app/src/main/java/com/itemp/cmsplayer/heart/HeartbeatService.kt:247:51 Elvis operator (?:) always returns the left operand of non-nullable type String
-
 > Task :app:compileDebugJavaWithJavac UP-TO-DATE
-Java compiler version 22 has deprecated support for compiling with source/target version 8.
-Try one of the following options:
-    1. [Recommended] Set a lower Java compiler version (using Java toolchain)
-    2. Set a higher source/target version
-    3. If you don't want to use Java toolchain, try using a lower version of the JDK running the build
-       (e.g., by setting the `JAVA_HOME` environment variable or the `org.gradle.java.home` Gradle property)
-For more details on how to configure these settings, see https://developer.android.com/build/jdks.
-
 > Task :app:processDebugJavaRes UP-TO-DATE
 > Task :app:mergeDebugJavaResource UP-TO-DATE
 > Task :app:dexBuilderDebug
@@ -55,5 +42,5 @@ For more details on how to configure these settings, see https://developer.andro
 > Task :app:createDebugApkListingFileRedirect UP-TO-DATE
 > Task :app:assembleDebug
 
-BUILD SUCCESSFUL in 2m 11s
+BUILD SUCCESSFUL in 48s
 35 actionable tasks: 4 executed, 31 up-to-date

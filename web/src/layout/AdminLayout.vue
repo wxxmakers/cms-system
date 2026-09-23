@@ -55,20 +55,31 @@ import http from '../api'
 
 const router = useRouter()
 const user = computed(() => JSON.parse(localStorage.getItem('cms_user') || 'null'))
-const roleNames = { super_admin: '超级管理员', operator: '广告运营', auditor: '审核员', advertiser: '广告主' }
+const roleNames = { super_admin: '超级管理员', operator: '广告运营', advertiser: '广告主', customer: '子账号', tenant_admin: '租户管理员' }
 
-const menus = [
+const allMenus = [
   { path: '/dashboard', title: '仪表盘', icon: 'Odometer' },
-  { path: '/devices', title: '设备管理', icon: 'Monitor' },
-  { path: '/monitor', title: '在线监控', icon: 'DataLine' },
-  { path: '/materials', title: '素材管理', icon: 'Film' },
-  { path: '/playlists', title: '节目单管理', icon: 'List' },
-  { path: '/schedules', title: '排期管理', icon: 'Calendar' },
-  { path: '/control', title: '远程控制', icon: 'Setting' },
-  { path: '/stats', title: '数据统计', icon: 'TrendCharts' },
-  { path: '/settings/users', title: '用户与角色', icon: 'User' },
-  { path: '/settings/logs', title: '审计与登录日志', icon: 'Document' },
+  { path: '/devices', title: '设备管理', icon: 'Monitor', perm: 'devices' },
+  { path: '/monitor', title: '在线监控', icon: 'DataLine', perm: 'devices' },
+  { path: '/materials', title: '素材管理', icon: 'Film', perm: 'materials' },
+  { path: '/playlists', title: '节目单管理', icon: 'List', perm: 'playlists' },
+  { path: '/schedules', title: '排期管理', icon: 'Calendar', perm: 'schedules' },
+  { path: '/control', title: '远程控制', icon: 'Setting', perm: 'control' },
+  { path: '/stats', title: '数据统计', icon: 'TrendCharts', perm: 'stats' },
+  { path: '/members', title: '成员管理', icon: 'UserFilled', roles: ['tenant_admin'] },
+  { path: '/settings/users', title: '用户与角色', icon: 'User', roles: ['super_admin'] },
+  { path: '/settings/logs', title: '审计与登录日志', icon: 'Document', roles: ['super_admin'] },
 ]
+// 按角色/权限过滤菜单: 平台管理员全量; 租户管理员按模块; 子账号按勾选权限 (服务端同样强制拦截)
+const menus = computed(() => {
+  const role = user.value?.role
+  const perms = user.value?.permissions
+  return allMenus.filter((m) => {
+    if (m.roles && !m.roles.includes(role)) return false
+    if (m.perm && role === 'customer') return Array.isArray(perms) && perms.includes(m.perm)
+    return true
+  })
+})
 
 const pwdVisible = ref(false)
 const pwdForm = reactive({ oldPassword: '', newPassword: '', confirm: '' })

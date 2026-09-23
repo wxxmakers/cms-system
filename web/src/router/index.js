@@ -15,6 +15,7 @@ const routes = [
       { path: 'schedules', name: 'schedules', component: () => import('../views/ScheduleListView.vue'), meta: { title: '排期管理', icon: 'Calendar' } },
       { path: 'control', name: 'control', component: () => import('../views/ControlView.vue'), meta: { title: '远程控制', icon: 'Setting' } },
       { path: 'stats', name: 'stats', component: () => import('../views/StatsView.vue'), meta: { title: '数据统计', icon: 'TrendCharts' } },
+      { path: 'members', name: 'members', component: () => import('../views/MembersView.vue'), meta: { title: '成员管理', icon: 'UserFilled' } },
       { path: 'settings/users', name: 'users', component: () => import('../views/UserListView.vue'), meta: { title: '用户与角色', icon: 'User' } },
       { path: 'settings/logs', name: 'logs', component: () => import('../views/LogView.vue'), meta: { title: '审计与登录日志', icon: 'Document' } },
     ],

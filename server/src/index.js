@@ -5,6 +5,7 @@ const config = require('./config');
 const db = require('./db');
 const { migrate } = require('./migrate');
 const { errorHandler } = require('./middleware/common');
+const storage = require('./services/storage');
 
 const app = express();
 app.disable('x-powered-by');
@@ -13,19 +14,42 @@ app.use(express.json({ limit: '2mb' }));
 app.use(express.urlencoded({ extended: true }));
 
 // 素材静态下载 (/files/videos/xxx.mp4), 支持 Range 断点续传
-app.use('/files', express.static(config.uploadsDir, {
-  acceptRanges: true,
-  setHeaders(res, filePath) {
-    if (/\.(mp4|avi|mov)$/i.test(filePath)) res.setHeader('Content-Type', 'video/mp4');
+// R2 启用时从对象存储流式转发; 否则直接读本地磁盘
+app.get('/files/*', async (req, res) => {
+  try {
+    const key = req.path.replace(/^\/files\//, '');
+    if (key.includes('..')) return res.status(400).json({ code: 400, msg: '非法路径' });
+    const info = await storage.getStream(key, req.headers.range);
+    if (!info) return res.status(404).json({ code: 404, msg: '文件不存在' });
+    res.setHeader('Content-Type', info.contentType || 'application/octet-stream');
+    res.setHeader('Accept-Ranges', 'bytes');
     res.setHeader('Access-Control-Allow-Origin', '*');
-  },
-}));
+    if (info.contentRange) {
+      res.status(206).setHeader('Content-Range', info.contentRange);
+    }
+    info.stream.pipe(res);
+  } catch (e) {
+    if (e.name === 'NoSuchKey') return res.status(404).json({ code: 404, msg: '文件不存在' });
+    res.status(500).json({ code: 500, msg: '读取失败' });
+  }
+});
 
-app.get('/', (req, res) => res.json({ code: 0, msg: 'CMS广告视频播放管理系统 后端服务', time: Date.now() }));
 app.get('/health', (req, res) => res.json({ code: 0, msg: 'ok', time: Date.now() }));
 
 app.use('/api/device', require('./routes/device'));
 app.use('/api/admin', require('./routes/admin'));
+
+// ===== 托管 Web 管理端 (编译产物 web/dist): 局域网设备直接访问 http://<本机IP>:3000 =====
+const webDist = path.join(__dirname, '../../web/dist');
+const fs = require('fs');
+if (fs.existsSync(path.join(webDist, 'index.html'))) {
+  app.use(express.static(webDist));
+  // SPA 路由回退: 非接口路径统一返回 index.html
+  app.use((req, res, next) => {
+    if (req.path.startsWith('/api/') || req.path.startsWith('/files/')) return next();
+    res.sendFile(path.join(webDist, 'index.html'));
+  });
+}
 
 app.use((req, res) => res.status(404).json({ code: 404, msg: '接口不存在' }));
 app.use(errorHandler);
@@ -59,13 +83,21 @@ async function sweep() {
   }
 }
 
-// 历史数据清理: 心跳采样保留 90 天 (需求 10), 指令历史保留 30 天
+// 历史数据清理: 心跳采样保留 90 天 (需求 10); 指令历史每设备仅保留最新 10 条 + 30 天过期
 async function cleanup() {
   try {
     const pad = (x) => String(x).padStart(2, '0');
     const fmt = (d) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
     await db('heartbeat_logs').where('ts', '<', Date.now() - 90 * 24 * 3600 * 1000).del();
     await db('commands').where('created_at', '<', fmt(new Date(Date.now() - 30 * 24 * 3600 * 1000))).del();
+    // 每设备只保留最新 10 条指令 (pending 未投递的不删, 防止离线设备丢指令)
+    const devs = await db('commands').distinct('device_id');
+    for (const { device_id } of devs) {
+      const keep = await db('commands').where({ device_id }).orderBy('id', 'desc').limit(10).pluck('id');
+      if (keep.length === 10) {
+        await db('commands').where({ device_id }).whereNotIn('id', keep).whereNot('status', 'pending').del();
+      }
+    }
   } catch (e) {
     console.error('[cleanup]', e.message);
   }

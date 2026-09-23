@@ -33,7 +33,7 @@
       </el-form>
       <el-row :gutter="16">
         <el-col :span="10">
-          <h4>已过审素材库 (双击添加)</h4>
+          <h4>素材库 (双击添加)</h4>
           <el-table :data="selectable" height="380" size="small" border @row-dblclick="addItem">
             <el-table-column label="封面" width="90">
               <template #default="{ row }">
@@ -105,11 +105,6 @@
         </el-table-column>
         <el-table-column label="时长" width="90">
           <template #default="{ row }">{{ fmtDur(row.duration) }}</template>
-        </el-table-column>
-        <el-table-column label="状态" width="80">
-          <template #default="{ row }">
-            <el-tag size="small" :type="row.status === 'approved' ? 'success' : 'info'">{{ { approved: '已审', pending: '待审', rejected: '被拒' }[row.status] }}</el-tag>
-          </template>
         </el-table-column>
       </el-table>
     </el-dialog>

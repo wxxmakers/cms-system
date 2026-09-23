@@ -1,6 +1,6 @@
 const express = require('express');
 const db = require('../../db');
-const { authMiddleware, requireRoles } = require('../../middleware/auth');
+const { authMiddleware, requireRoles, isTenantUser, deviceOutOfScope, hasPerm } = require('../../middleware/auth');
 const { audit, ok, fail } = require('../../middleware/common');
 
 const router = express.Router();
@@ -21,7 +21,9 @@ function normalizeItems(items) {
 // ===== 节目单列表 =====
 router.get('/', async (req, res, next) => {
   try {
-    const rows = await db('playlists').orderBy('id', 'desc');
+    let q = db('playlists');
+    if (isTenantUser(req)) q = q.where('owner_id', req.auth.tenantId); // 租户只看本租户节目单 (owner_id=租户id)
+    const rows = await q.orderBy('id', 'desc');
     const counts = await db('playlist_items').select('playlist_id').count('id as c').groupBy('playlist_id');
     const cmap = {}; counts.forEach((r) => { cmap[r.playlist_id] = r.c; });
     const issues = await db('device_playlist').orderBy('id', 'desc');
@@ -38,6 +40,7 @@ router.get('/:id', async (req, res, next) => {
   try {
     const p = await db('playlists').where({ id: req.params.id }).first();
     if (!p) return res.status(404).json(fail('节目单不存在'));
+    if (isTenantUser(req) && p.owner_id !== req.auth.tenantId) return res.status(404).json(fail('节目单不存在'));
     const items = await db('playlist_items as pi')
       .join('videos as v', 'v.id', 'pi.video_id')
       .where('pi.playlist_id', p.id)
@@ -56,13 +59,17 @@ router.get('/:id', async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
-// ===== 创建节目单 =====
-router.post('/', requireRoles('super_admin', 'operator'), async (req, res, next) => {
+// ===== 创建节目单 (客户只能引用自己上传的素材) =====
+router.post('/', requireRoles('super_admin', 'operator', 'customer', 'tenant_admin'), async (req, res, next) => {
   try {
     const { name, remark, items } = req.body || {};
     if (!name) return res.status(400).json(fail('节目单名称必填'));
-    const [id] = await db('playlists').insert({ name, remark: remark || null, created_by: req.auth.id });
     const norm = normalizeItems(items);
+    if (isTenantUser(req) && norm.length) {
+      const own = await db('videos').where({ tenant_id: req.auth.tenantId }).pluck('id');
+      if (norm.some((it) => !own.includes(it.video_id))) return res.status(400).json(fail('节目单包含无权使用的素材'));
+    }
+    const [id] = await db('playlists').insert({ name, remark: remark || null, created_by: req.auth.id, owner_id: req.auth.tenantId });
     if (norm.length) await db('playlist_items').insert(norm.map((it) => ({ ...it, playlist_id: id })));
     audit(req, '创建节目单', `playlist:${name}`, `items=${norm.length}`);
     return res.json(ok({ id }));
@@ -70,11 +77,17 @@ router.post('/', requireRoles('super_admin', 'operator'), async (req, res, next)
 });
 
 // ===== 编辑节目单 (版本号 +1, 设备据此增量拉取) =====
-router.put('/:id', requireRoles('super_admin', 'operator'), async (req, res, next) => {
+router.put('/:id', requireRoles('super_admin', 'operator', 'customer', 'tenant_admin'), async (req, res, next) => {
   try {
     const p = await db('playlists').where({ id: req.params.id }).first();
     if (!p) return res.status(404).json(fail('节目单不存在'));
+    if (isTenantUser(req) && p.owner_id !== req.auth.tenantId) return res.status(404).json(fail('节目单不存在'));
     const { name, remark, items } = req.body || {};
+    if (isTenantUser(req) && Array.isArray(items)) {
+      const norm = normalizeItems(items);
+      const own = await db('videos').where({ tenant_id: req.auth.tenantId }).pluck('id');
+      if (norm.some((it) => !own.includes(it.video_id))) return res.status(400).json(fail('节目单包含无权使用的素材'));
+    }
     const patch = { updated_at: new Date(), version: p.version + 1 };
     if (name != null) patch.name = name;
     if (remark !== undefined) patch.remark = remark;
@@ -90,10 +103,11 @@ router.put('/:id', requireRoles('super_admin', 'operator'), async (req, res, nex
 });
 
 // ===== 删除节目单 (级联清理条目/下发记录/引用排期, 设备自动回退到更早的默认下发) =====
-router.delete('/:id', requireRoles('super_admin', 'operator'), async (req, res, next) => {
+router.delete('/:id', requireRoles('super_admin', 'operator', 'customer', 'tenant_admin'), async (req, res, next) => {
   try {
     const p = await db('playlists').where({ id: req.params.id }).first();
     if (!p) return res.status(404).json(fail('节目单不存在'));
+    if (isTenantUser(req) && p.owner_id !== req.auth.tenantId) return res.status(404).json(fail('节目单不存在'));
     const issues = await db('device_playlist').where({ playlist_id: p.id });
     const schedules = await db('schedules').where({ playlist_id: p.id });
     await db('playlist_items').where({ playlist_id: p.id }).del();
@@ -107,14 +121,17 @@ router.delete('/:id', requireRoles('super_admin', 'operator'), async (req, res, 
 });
 
 // ===== 下发节目单 (设备 / 分组 / 全部, 需求 5.1.5) =====
-router.post('/:id/issue', requireRoles('super_admin', 'operator'), async (req, res, next) => {
+router.post('/:id/issue', requireRoles('super_admin', 'operator', 'customer', 'tenant_admin'), async (req, res, next) => {
   try {
     const p = await db('playlists').where({ id: req.params.id }).first();
     if (!p) return res.status(404).json(fail('节目单不存在'));
+    if (isTenantUser(req) && p.owner_id !== req.auth.tenantId) return res.status(404).json(fail('节目单不存在'));
     const { targetType, targetId } = req.body || {};
     if (!['device', 'group', 'all'].includes(targetType)) return res.status(400).json(fail('下发目标不合法'));
+    if (isTenantUser(req) && targetType !== 'device') return res.status(403).json(fail('只能下发给本租户的设备'));
     if (targetType !== 'all' && !targetId) return res.status(400).json(fail('请选择下发目标'));
     if (targetType === 'device') {
+      if (await deviceOutOfScope(req, targetId)) return res.status(404).json(fail('设备不存在'));
       const d = await db('devices').where({ id: targetId }).whereNull('deleted_at').first();
       if (!d) return res.status(400).json(fail('设备不存在'));
     }

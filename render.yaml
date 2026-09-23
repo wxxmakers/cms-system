@@ -1,0 +1,37 @@
+# Render 部署配置 (https://render.com/docs/blueprint-spec)
+# 前提: 仓库已推送到 GitHub/GitLab 并在 Render 中连接
+services:
+  - type: web
+    name: cms-system
+    runtime: node
+    plan: starter          # free 计划无持久磁盘(SQLite 会丢数据), 设备常驻服务建议 starter
+    region: singapore
+    buildCommand: cd web && npm install && npm run build && cd ../server && npm install
+    startCommand: cd server && node src/index.js
+    healthCheckPath: /health
+    disk:                  # SQLite 数据库 + 本地素材 (启用 R2 后素材走对象存储, 仅数据库用磁盘)
+      name: cms-data
+      mountPath: /data
+      sizeGB: 5
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: JWT_SECRET
+        generateValue: true
+      - key: DATA_DIR
+        value: /data/db
+      - key: UPLOADS_DIR
+        value: /data/uploads
+      - key: AUTO_APPROVE
+        value: "true"
+      # 以下在 Dashboard 中填写 (Blueprint 中标记 sync:false)
+      - key: PUBLIC_BASE_URL      # 部署后填 https://<服务名>.onrender.com
+        sync: false
+      - key: R2_ACCOUNT_ID
+        sync: false
+      - key: R2_BUCKET
+        sync: false
+      - key: R2_ACCESS_KEY_ID
+        sync: false
+      - key: R2_SECRET_ACCESS_KEY
+        sync: false

@@ -1,11 +1,11 @@
 const express = require('express');
 const db = require('../../db');
-const { authMiddleware, requireRoles } = require('../../middleware/auth');
+const { authMiddleware, requireRoles, isTenantUser, deviceOutOfScope } = require('../../middleware/auth');
 const { audit, ok, fail } = require('../../middleware/common');
 const engine = require('../../services/schedule-engine');
 
 const router = express.Router();
-router.use(authMiddleware, requireRoles('super_admin', 'operator'));
+router.use(authMiddleware, requireRoles('super_admin', 'operator', 'customer', 'tenant_admin'));
 
 function validate(sch) {
   if (!sch.name) return '排期名称必填';
@@ -41,10 +41,20 @@ function toRow(b) {
   };
 }
 
+// 租户排期归属校验: 节目单必须是本租户的, 目标设备必须是本租户的
+async function customerScopeCheck(req, b) {
+  const p = await db('playlists').where({ id: Number(b.playlistId) }).first();
+  if (!p || p.owner_id !== req.auth.tenantId) return '无权使用该节目单';
+  if ((b.targetType || 'all') === 'device' && await deviceOutOfScope(req, b.targetId)) return '无权定向到该设备';
+  return null;
+}
+
 // ===== 排期列表 (含节目单名/冲突标记) =====
 router.get('/', async (req, res, next) => {
   try {
-    const rows = await db('schedules').orderBy('id', 'desc');
+    let q = db('schedules');
+    if (isTenantUser(req)) q = q.where('owner_id', req.auth.tenantId); // 租户只看本租户排期 (owner_id=租户id)
+    const rows = await q.orderBy('id', 'desc');
     const playlists = await db('playlists');
     const pmap = {}; playlists.forEach((p) => { pmap[p.id] = p.name; });
     const conflicts = await engine.detectConflicts();
@@ -68,7 +78,11 @@ router.post('/', async (req, res, next) => {
   try {
     const err = validate(req.body || {});
     if (err) return res.status(400).json(fail(err));
-    const [id] = await db('schedules').insert({ ...toRow(req.body), created_by: req.auth.id });
+    if (isTenantUser(req)) {
+      const err2 = await customerScopeCheck(req, req.body || {});
+      if (err2) return res.status(403).json(fail(err2));
+    }
+    const [id] = await db('schedules').insert({ ...toRow(req.body), created_by: req.auth.id, owner_id: req.auth.tenantId });
     audit(req, '创建排期', `schedule:${req.body.name}`);
     return res.json(ok({ id }));
   } catch (e) { next(e); }
@@ -79,6 +93,11 @@ router.put('/:id', async (req, res, next) => {
   try {
     const s = await db('schedules').where({ id: req.params.id }).first();
     if (!s) return res.status(404).json(fail('排期不存在'));
+    if (isTenantUser(req) && s.owner_id !== req.auth.tenantId) return res.status(404).json(fail('排期不存在'));
+    if (isTenantUser(req)) {
+      const err2 = await customerScopeCheck(req, req.body || {});
+      if (err2) return res.status(403).json(fail(err2));
+    }
     const err = validate(req.body || {});
     if (err) return res.status(400).json(fail(err));
     await db('schedules').where({ id: s.id }).update({ ...toRow(req.body), updated_at: new Date() });
@@ -92,6 +111,7 @@ router.put('/:id/toggle', async (req, res, next) => {
   try {
     const s = await db('schedules').where({ id: req.params.id }).first();
     if (!s) return res.status(404).json(fail('排期不存在'));
+    if (isTenantUser(req) && s.owner_id !== req.auth.tenantId) return res.status(404).json(fail('排期不存在'));
     await db('schedules').where({ id: s.id }).update({ enabled: !s.enabled, updated_at: new Date() });
     audit(req, s.enabled ? '停用排期' : '启用排期', `schedule:${s.name}`);
     return res.json(ok({ enabled: !s.enabled }));
@@ -103,6 +123,7 @@ router.delete('/:id', async (req, res, next) => {
   try {
     const s = await db('schedules').where({ id: req.params.id }).first();
     if (!s) return res.status(404).json(fail('排期不存在'));
+    if (isTenantUser(req) && s.owner_id !== req.auth.tenantId) return res.status(404).json(fail('排期不存在'));
     await db('schedules').where({ id: s.id }).del();
     audit(req, '删除排期', `schedule:${s.name}`);
     return res.json(ok());
@@ -118,6 +139,11 @@ router.post('/emergency', async (req, res, next) => {
     if (targetType !== 'all' && !targetId) return res.status(400).json(fail('请选择目标设备/分组'));
     const p = await db('playlists').where({ id: playlistId }).first();
     if (!p) return res.status(400).json(fail('节目单不存在'));
+    if (isTenantUser(req)) {
+      if (p.owner_id !== req.auth.tenantId) return res.status(404).json(fail('节目单不存在'));
+      if (targetType !== 'device') return res.status(403).json(fail('只能插播到本租户的设备'));
+      if (await deviceOutOfScope(req, targetId)) return res.status(404).json(fail('设备不存在'));
+    }
     const mins = Math.min(1440, Math.max(1, Number(minutes) || 10));
     const now = new Date();
     const end = new Date(now.getTime() + mins * 60000);

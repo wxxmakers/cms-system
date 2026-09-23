@@ -57,7 +57,7 @@ object PlaylistEngine {
         val r = ApiClient.get("/api/device/playlist")
         if (!r.ok) {
             AppLog.e("PlaylistEngine", "拉取节目单失败: ${r.msg}")
-            // 401 时尝试自动重登一次
+            // 401 时尝试自动重登一次; 凭据被拒则交由心跳服务处理强制注销
             if (r.code == 401) {
                 try { ApiClient.relogin() } catch (_: Exception) { }
             }

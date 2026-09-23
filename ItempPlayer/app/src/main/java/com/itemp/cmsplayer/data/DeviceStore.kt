@@ -12,10 +12,6 @@ object DeviceStore {
 
     private lateinit var prefs: SharedPreferences
 
-    fun init(context: Context) {
-        prefs = context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-    }
-
     var server: String
         get() = prefs.getString("server", "") ?: ""
         set(v) = prefs.edit().putString("server", v.trimEnd('/')).apply()
@@ -54,6 +50,57 @@ object DeviceStore {
     var wifiOnlyDownload: Boolean
         get() = prefs.getBoolean("wifiOnly", false)
         set(v) = prefs.edit().putBoolean("wifiOnly", v).apply()
+
+    /** 设备唯一标识 (序列号): 与 adb devices / 机身标签一致, 重启、重装、恢复出厂均不变 */
+    var fingerprint: String
+        get() = prefs.getString("fingerprint", "") ?: ""
+        private set(v) = prefs.edit().putString("fingerprint", v).apply()
+
+    /** 指纹已在服务器登记过 (登录页据此决定是否自动尝试免密登录) */
+    var fingerprintRegistered: Boolean
+        get() = prefs.getBoolean("fpRegistered", false)
+        set(v) = prefs.edit().putBoolean("fpRegistered", v).apply()
+
+    /** 设备端输入的自定义名称 (自动注册时上报, 等待批准期间重试保持一致) */
+    var pendingDeviceName: String
+        get() = prefs.getString("pendingDeviceName", "") ?: ""
+        set(v) = prefs.edit().putString("pendingDeviceName", v).apply()
+
+    fun init(context: Context) {
+        prefs = context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        // 序列号每次启动重新读取并同步: 若升级前后标识来源切换 (如 ANDROID_ID→序列号) 自动更正
+        val sn = readSerialNumber()
+        if (sn.isNotBlank() && sn != fingerprint) fingerprint = sn
+        if (fingerprint.isBlank()) {
+            // 兜底: 无序列号设备用 ANDROID_ID (部分固件重启会变, 仅作最后手段)
+            fingerprint = android.provider.Settings.Secure.getString(
+                context.contentResolver, android.provider.Settings.Secure.ANDROID_ID
+            ) ?: ""
+        }
+    }
+
+    /**
+     * 读取设备序列号 (多级降级策略):
+     * 1. getprop ro.serialno —— RK/展锐等工规板稳定可用, 无需权限
+     * 2. getprop ro.boot.serialno
+     * 3. Build.getSerial() —— 高版本需系统权限, 多数普通应用拿不到
+     * 实测 MS68(RK3566): ANDROID_ID 每次开机会随机变化, 不能作唯一标识; 序列号恒定
+     */
+    private fun readSerialNumber(): String {
+        for (prop in listOf("ro.serialno", "ro.boot.serialno")) {
+            try {
+                val p = Runtime.getRuntime().exec(arrayOf("getprop", prop))
+                val v = p.inputStream.readBytes().toString(Charsets.UTF_8).trim()
+                p.waitFor()
+                if (v.length >= 6 && !v.equals("unknown", ignoreCase = true)) return v
+            } catch (_: Exception) { /* 尝试下一来源 */ }
+        }
+        return try {
+            val v = if (android.os.Build.VERSION.SDK_INT >= 26) android.os.Build.getSerial()
+                    else @Suppress("DEPRECATION") android.os.Build.SERIAL
+            if (v.length >= 6 && !v.equals("unknown", ignoreCase = true)) v else ""
+        } catch (_: Exception) { "" }
+    }
 
     fun isLoggedIn(): Boolean = token.isNotEmpty() && username.isNotEmpty()
 

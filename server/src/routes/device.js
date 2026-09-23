@@ -7,7 +7,7 @@ const db = require('../db');
 const config = require('../config');
 const { signDeviceToken, authMiddleware, requireDevice } = require('../middleware/auth');
 const lockout = require('../middleware/lockout');
-const { clientIp, ok, fail } = require('../middleware/common');
+const { clientIp, audit, ok, fail } = require('../middleware/common');
 const engine = require('../services/schedule-engine');
 
 const router = express.Router();
@@ -24,6 +24,59 @@ function baseUrl(req) {
   const host = req.headers.host || `localhost:${config.port}`;
   return `http://${host}`;
 }
+
+// 指纹绑定审计 (设备身份自动关联)
+function AppLogBind(req, deviceId, fp) {
+  audit(req, '绑定设备指纹', `device#${deviceId}`, `fp:...${fp.slice(-8)}`);
+}
+
+// ===== 指纹免密登录 (方案一): ANDROID_ID 识别设备 =====
+// 预注册: Web 端为设备录入 fingerprint → 此接口直接发 token
+// 自动注册: 未知指纹自动创建「待批准」设备, Web 批准后下次即自动登录
+router.post('/auto-login', async (req, res, next) => {
+  try {
+    const { fingerprint, hwInfo } = req.body || {};
+    const fp = String(fingerprint || '').trim();
+    if (!fp || fp.length < 8) return res.status(400).json(fail('无效设备指纹'));
+
+    let device = await db('devices').where({ fingerprint: fp }).whereNull('deleted_at').first();
+
+    if (!device) {
+      // 自动注册为待批准设备: 使用设备端输入的自定义名称 (需求: 网页端直接显示设备输入的名称)
+      const username = `dev_${require('crypto').randomBytes(3).toString('hex')}`;
+      const password = Math.random().toString(36).slice(-6) + 'Aa1';
+      const customName = String(hwInfo?.deviceName || '').trim().slice(0, 60) || `待批准-${fp.slice(-6)}`;
+      const [id] = await db('devices').insert({
+        device_name: customName,
+        username,
+        password: await bcrypt.hash(password, 10),
+        fingerprint: fp,
+        approved: false,
+        model: hwInfo?.model || null,
+        android_version: hwInfo?.androidVersion || null,
+        resolution: hwInfo?.resolution || null,
+      });
+      audit(req, '自动注册设备', customName, `fp:...${fp.slice(-8)} username=${username}`);
+      await db('login_logs').insert({ username, type: 'device', ip: clientIp(req), ua: String(req.headers['user-agent'] || '').slice(0, 255), success: 0, msg: '新设备等待批准' });
+      return res.json(ok({ status: 'pending', deviceId: id }, '设备已登记, 等待管理员批准'));
+    }
+
+    if (!device.approved) {
+      return res.json(ok({ status: 'pending', deviceId: device.id }, '设备待管理员批准'));
+    }
+
+    await db('devices').where({ id: device.id }).update({ last_online: new Date(), ip: clientIp(req) });
+    await db('login_logs').insert({ username: device.username, type: 'device', ip: clientIp(req), ua: String(req.headers['user-agent'] || '').slice(0, 255), success: 1, msg: '指纹免密登录' });
+    return res.json(ok({
+      status: 'ok',
+      token: signDeviceToken(device),
+      deviceId: device.id,
+      deviceName: device.device_name,
+      username: device.username,
+      serverTime: Date.now(),
+    }));
+  } catch (e) { next(e); }
+});
 
 // ===== 设备登录 =====
 router.post('/login', async (req, res, next) => {
@@ -63,6 +116,19 @@ router.post('/heartbeat', authMiddleware, requireDevice, async (req, res, next) 
   try {
     const b = req.body || {};
     const now = new Date();
+
+    // 指纹绑定: 手动/任意方式登录的设备, 心跳上报指纹后与账号记录绑定
+    // 同一指纹只保留一条绑定 → 从根本上避免同一设备产生重复身份
+    if (b.fingerprint && String(b.fingerprint).length >= 8) {
+      const fp = String(b.fingerprint).trim();
+      const me = await db('devices').where({ id: req.auth.id }).first();
+      if (me.fingerprint !== fp) {
+        await db('devices').where({ fingerprint: fp }).whereNot({ id: req.auth.id }).update({ fingerprint: null });
+        await db('devices').where({ id: req.auth.id }).update({ fingerprint: fp });
+        AppLogBind(req, req.auth.id, fp);
+      }
+    }
+
     await db('devices').where({ id: req.auth.id }).update({
       last_online: now,
       ip: clientIp(req),

@@ -25,9 +25,18 @@ const config = {
   offlineThresholdMs: 90 * 1000,
   // 心跳采样与状态翻转扫描间隔
   sweepIntervalMs: 30 * 1000,
-  dataDir: path.join(__dirname, '..', 'data'),
-  uploadsDir: path.join(__dirname, '..', 'uploads'),
+  dataDir: process.env.DATA_DIR || path.join(__dirname, '..', 'data'),
+  uploadsDir: process.env.UPLOADS_DIR || path.join(__dirname, '..', 'uploads'),
+  // Cloudflare R2 对象存储 (S3 兼容): 环境变量齐全时自动启用, 否则全部走本地磁盘
+  r2: {
+    accountId: process.env.R2_ACCOUNT_ID || '',
+    bucket: process.env.R2_BUCKET || '',
+    accessKeyId: process.env.R2_ACCESS_KEY_ID || '',
+    secretAccessKey: process.env.R2_SECRET_ACCESS_KEY || '',
+  },
 };
+
+config.r2.enabled = !!(config.r2.accountId && config.r2.bucket && config.r2.accessKeyId && config.r2.secretAccessKey);
 
 fs.mkdirSync(config.dataDir, { recursive: true });
 fs.mkdirSync(path.join(config.uploadsDir, 'videos'), { recursive: true });

@@ -155,6 +155,16 @@ class PlayerActivity : ComponentActivity() {
         if (hasFocus) enterImmersive()
     }
 
+    override fun onResume() {
+        super.onResume()
+        // 凭据已被清除 (账号删除/远程注销) → 退回登录页
+        if (!DeviceStore.isLoggedIn()) {
+            startActivity(android.content.Intent(this, MainActivity::class.java)
+                .addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK or android.content.Intent.FLAG_ACTIVITY_CLEAR_TASK))
+            finish()
+        }
+    }
+
     private fun enterImmersive() {
         @Suppress("DEPRECATION")
         window.decorView.systemUiVisibility = (

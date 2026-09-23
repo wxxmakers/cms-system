@@ -15,6 +15,10 @@ import java.util.concurrent.TimeUnit
  */
 object ApiClient {
 
+    const val RELOGIN_OK = 0        // 重登成功
+    const val RELOGIN_REJECTED = 1  // 凭据被服务器明确拒绝 (账号已删/密码已改)
+    const val RELOGIN_ERROR = 2     // 网络异常, 保持退避重试
+
     private val JSON_MEDIA = "application/json; charset=utf-8".toMediaType()
 
     val http: OkHttpClient = OkHttpClient.Builder()
@@ -65,6 +69,31 @@ object ApiClient {
             .post(form).build()
     )
 
+    /**
+     * 指纹免密登录 (方案一): 返回 status = ok / pending / error
+     * @param deviceName 设备端输入的自定义名称, 用于自动注册时的命名
+     */
+    fun autoLogin(server: String, deviceName: String = ""): JSONObject? {
+        val fp = DeviceStore.fingerprint
+        if (fp.isBlank()) return null
+        val rb: RequestBody = JSONObject()
+            .put("fingerprint", fp)
+            .put("hwInfo", JSONObject()
+                .put("model", android.os.Build.MODEL)
+                .put("androidVersion", android.os.Build.VERSION.RELEASE)
+                .put("deviceName", deviceName))
+            .toString().toRequestBody(JSON_MEDIA)
+        return try {
+            http.newCall(
+                Request.Builder().url("${server.trimEnd('/')}/api/device/auto-login").post(rb).build()
+            ).execute().use { resp ->
+                if (resp.isSuccessful) JSONObject(resp.body?.string() ?: "{}") else null
+            }
+        } catch (e: Exception) {
+            null
+        }
+    }
+
     /** 设备登录 (不携带 token) */
     fun login(server: String, username: String, password: String): ApiResult {
         val rb: RequestBody = JSONObject()
@@ -79,15 +108,27 @@ object ApiClient {
         }
     }
 
-    /** token 过期自动重新登录 (需求 5.2.6) */
+    /** token 过期自动重新登录 (需求 5.2.6); 返回值区分失败原因 */
     @Throws(IOException::class)
-    fun relogin(): Boolean {
-        val r = login(DeviceStore.server, DeviceStore.username, DeviceStore.password)
-        if (r.ok && r.data != null) {
-            DeviceStore.token = r.str("token")
-            DeviceStore.deviceId = r.int("deviceId", -1)
-            return true
+    fun relogin(): Int {
+        // 凭据不完整 (指纹登录模式无密码 / 旧版残留) → 只能注销后走指纹/手动重新登录
+        if (DeviceStore.username.isBlank() || DeviceStore.password.isBlank()) {
+            return RELOGIN_REJECTED
         }
-        return false
+        return try {
+            val r = login(DeviceStore.server, DeviceStore.username, DeviceStore.password)
+            if (r.ok && r.data != null) {
+                DeviceStore.token = r.str("token")
+                DeviceStore.deviceId = r.int("deviceId", -1)
+                RELOGIN_OK
+            } else if (r.code == 401 || r.code == 423) {
+                // 账号密码被拒: 设备可能已被删除/密码已重置 → 需强制注销
+                RELOGIN_REJECTED
+            } else {
+                RELOGIN_ERROR
+            }
+        } catch (e: Exception) {
+            RELOGIN_ERROR // 网络故障, 不应注销
+        }
     }
 }

@@ -5,9 +5,6 @@
       <el-select v-model="query.type" placeholder="全部类型" clearable style="width:120px" @change="load">
         <el-option label="视频" value="video" /><el-option label="图片" value="image" />
       </el-select>
-      <el-select v-model="query.status" placeholder="全部状态" clearable style="width:120px" @change="load">
-        <el-option label="待审核" value="pending" /><el-option label="已通过" value="approved" /><el-option label="已拒绝" value="rejected" />
-      </el-select>
       <el-button type="primary" @click="load">查询</el-button>
       <el-upload :show-file-list="false" :before-upload="onUpload" accept=".mp4,.avi,.mov,.jpg,.jpeg,.png" style="display:inline-block">
         <el-button type="success" :loading="uploading">上传素材 {{ uploading ? `(${uploadProgress}%)` : '' }}</el-button>
@@ -42,25 +39,16 @@
         </template>
       </el-table-column>
       <el-table-column prop="md5" label="MD5" width="130" class-name="mono" show-overflow-tooltip />
-      <el-table-column label="审核状态" width="95">
-        <template #default="{ row }">
-          <el-tag size="small" :type="row.status === 'approved' ? 'success' : row.status === 'rejected' ? 'danger' : 'info'">
-            {{ { pending: '待审核', approved: '已通过', rejected: '已拒绝' }[row.status] }}
-          </el-tag>
-        </template>
-      </el-table-column>
       <el-table-column label="过期时间" width="110">
         <template #default="{ row }">{{ row.expire_at ? String(row.expire_at).slice(0, 10) : '永不' }}</template>
       </el-table-column>
       <el-table-column label="上传时间" width="160">
         <template #default="{ row }">{{ fmtTime(row.created_at) }}</template>
       </el-table-column>
-      <el-table-column label="操作" width="220" fixed="right">
+      <el-table-column label="操作" width="180" fixed="right">
         <template #default="{ row }">
           <el-button link type="primary" @click="preview(row)">预览</el-button>
           <el-button link type="primary" @click="rename(row)">重命名</el-button>
-          <el-button v-if="row.status !== 'approved'" link type="success" @click="audit(row, 'approved')">通过</el-button>
-          <el-button v-if="row.status !== 'rejected'" link type="warning" @click="audit(row, 'rejected')">拒绝</el-button>
           <el-button link type="danger" @click="remove(row)">删除</el-button>
         </template>
       </el-table-column>
@@ -89,7 +77,7 @@ const uploadProgress = ref(0)
 const list = ref([])
 const total = ref(0)
 const selection = ref([])
-const query = reactive({ keyword: '', type: '', status: '', page: 1, pageSize: 10 })
+const query = reactive({ keyword: '', type: '', page: 1, pageSize: 10 })
 const previewVisible = ref(false)
 const previewRow = ref(null)
 
@@ -100,7 +88,7 @@ function fileUrl(row) {
 async function load() {
   loading.value = true
   try {
-    const data = await http.get('/admin/videos', { params: { ...query, type: query.type || undefined, status: query.status || undefined } })
+    const data = await http.get('/admin/videos', { params: { ...query, type: query.type || undefined } })
     list.value = data.list
     total.value = data.total
   } finally { loading.value = false }
@@ -142,17 +130,6 @@ async function rename(row) {
   const { value } = await ElMessageBox.prompt('新的素材名称', '重命名', { inputValue: row.name })
   await http.put(`/admin/videos/${row.id}`, { name: value })
   ElMessage.success('已重命名')
-  load()
-}
-
-async function audit(row, status) {
-  let reason = ''
-  if (status === 'rejected') {
-    const r = await ElMessageBox.prompt('拒绝原因', '审核拒绝', { inputPlaceholder: '请填写拒绝原因' })
-    reason = r.value || ''
-  }
-  await http.put(`/admin/videos/${row.id}/audit`, { status, reason })
-  ElMessage.success('审核完成')
   load()
 }
 

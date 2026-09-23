@@ -130,20 +130,28 @@ class HeartbeatService : Service() {
     private fun heartbeat(): Boolean {
         if (!DeviceStore.isLoggedIn()) return false
         val body = JSONObject()
+            .put("fingerprint", DeviceStore.fingerprint) // 指纹与账号绑定, 避免重复身份
             .put("appVersion", BuildConfig.VERSION_NAME)
             .put("model", Build.MODEL)
             .put("androidVersion", Build.VERSION.RELEASE)
             .put("resolution", resolution())
             .put("networkType", networkType())
-            .put("storageTotal", StatFs(filesDir.absolutePath).totalBytes / (1024 * 1024))
-            .put("storageFree", StatFs(filesDir.absolutePath).availableBytes / (1024 * 1024))
+            .put("storageTotal", StatFs(filesDir.absolutePath).totalBytes) // 原始字节, Web 端统一格式化
+            .put("storageFree", StatFs(filesDir.absolutePath).availableBytes)
             .put("currentVideoId", Companion.currentVideoId)
 
         return try {
             var r = ApiClient.post("/api/device/heartbeat", body)
             if (r.code == 401) {
-                // token 过期自动重登
-                if (ApiClient.relogin()) r = ApiClient.post("/api/device/heartbeat", body)
+                // token 过期自动重登; 凭据被服务器明确拒绝 (账号已删/密码已重置) → 强制注销退回登录页
+                when (ApiClient.relogin()) {
+                    ApiClient.RELOGIN_OK -> r = ApiClient.post("/api/device/heartbeat", body)
+                    ApiClient.RELOGIN_REJECTED -> {
+                        forceLogout("设备账号已被删除或密码已重置")
+                        return false
+                    }
+                    // 网络异常: 保持退避重试, 不注销
+                }
             }
             if (!r.ok) {
                 AppLog.w("Heartbeat", "心跳失败(${backoffMs}ms 后重试): ${r.msg}")
@@ -246,6 +254,13 @@ class HeartbeatService : Service() {
                               else "定时开关机已取消 ($weekName)"
                     AppLog.i("Heartbeat", message ?: "")
                 }
+                "logout" -> {
+                    // 远程强制注销 (方案四): 清空凭据, 设备退回登录页
+                    AppLog.i("Heartbeat", "收到远程注销指令, 设备即将退出登录")
+                    ackAsync(id, "success", "设备已注销").join(2000)
+                    forceLogout("远程注销指令")
+                    return
+                }
                 "reboot", "shutdown", "sleep", "wakeup" -> {
                     // RK 平台系统级广播 (ads.android.* / rk.android.*)
                     // 危险指令: 先回执再执行, 避免设备断电后指令永远停在 pending
@@ -276,6 +291,19 @@ class HeartbeatService : Service() {
             message = e.message ?: "执行异常"
         }
         ackAsync(id, result, message)
+    }
+
+    /**
+     * 强制注销: 清空本地凭据, 停止服务, 退回登录页
+     * 触发场景: 账号被删除/密码被重置(心跳401且重登被拒) 或 远程注销指令
+     */
+    private fun forceLogout(reason: String) {
+        AppLog.w("Heartbeat", "强制注销: $reason")
+        DeviceStore.clearCredentials()
+        // 停止播放并回到登录页 (登录页检测到未登录会显示账号输入)
+        startActivitySafely(Intent(this, MainActivity::class.java)
+            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK))
+        stopSelf()
     }
 
     /** 在独立线程刷新节目单 (下载可能耗时数分钟, 不能阻塞心跳) */

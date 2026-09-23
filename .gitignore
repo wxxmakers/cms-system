@@ -17,3 +17,13 @@ local.properties
 # 忽略所有 Markdown 文档
 *.md
 *.docx
+
+# Web / Node
+web/node_modules/
+server/node_modules/
+web/dist/
+server/.env
+server/data/
+server/uploads/
+node_logs/
+*.log

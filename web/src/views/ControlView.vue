@@ -171,7 +171,7 @@ async function setPowerSchedule(enable) {
   loadCommands()
 }
 
-// 清空当前设备指令历史 (系统亦会自动清理 30 天前的记录)
+// 清空当前设备指令历史 (系统自动保留每设备最新 10 条)
 async function clearCommands() {
   if (!selectedDevice.value) return
   await ElMessageBox.confirm('确认清空该设备的全部指令历史?', '提示', { type: 'warning' })

@@ -1,6 +1,16 @@
 const db = require('./db');
 
 async function migrate() {
+  // ===== 租户表 (SaaS 多租户: 配额控制) =====
+  if (!(await db.schema.hasTable('tenants'))) await db.schema.createTable('tenants', (t) => {
+    t.increments('id').primary();
+    t.string('name', 64).notNullable().unique();
+    t.integer('device_quota').notNullable().defaultTo(50);  // 设备配额
+    t.integer('account_quota').notNullable().defaultTo(5);   // 子账号配额
+    t.string('status', 16).notNullable().defaultTo('active');
+    t.datetime('created_at').notNullable().defaultTo(db.fn.now());
+  });
+
   const hasTable = await db.schema.hasTable('users');
   if (!hasTable) await db.schema.createTable('users', (t) => {
     t.increments('id').primary();
@@ -169,6 +179,69 @@ async function migrate() {
     t.string('msg', 128);
     t.datetime('ts').notNullable().defaultTo(db.fn.now());
   });
+
+  // 已有库升级: 设备指纹 + 审批状态 (免密登录, 方案一)
+  if (!(await db.schema.hasColumn('devices', 'fingerprint'))) {
+    await db.schema.table('devices', (t) => t.string('fingerprint', 128).nullable());
+  }
+  if (!(await db.schema.hasColumn('devices', 'approved'))) {
+    await db.schema.table('devices', (t) => t.boolean('approved').notNullable().defaultTo(true));
+  }
+
+  // 已有库升级: 客户数据隔离 (客户角色只能看到归属自己的设备/节目单/排期)
+  if (!(await db.schema.hasColumn('devices', 'user_id'))) {
+    await db.schema.table('devices', (t) => t.integer('user_id').nullable());
+  }
+  if (!(await db.schema.hasColumn('playlists', 'owner_id'))) {
+    await db.schema.table('playlists', (t) => t.integer('owner_id').nullable());
+  }
+  if (!(await db.schema.hasColumn('schedules', 'owner_id'))) {
+    await db.schema.table('schedules', (t) => t.integer('owner_id').nullable());
+  }
+
+  // ===== 已有库升级: SaaS 多租户 =====
+  if (!(await db.schema.hasColumn('users', 'tenant_id'))) {
+    await db.schema.table('users', (t) => t.integer('tenant_id').nullable());
+  }
+  if (!(await db.schema.hasColumn('users', 'permissions'))) {
+    // 子账号细粒度权限 (JSON): ["devices","materials","playlists","schedules","control","stats"]
+    await db.schema.table('users', (t) => t.string('permissions', 255).nullable());
+  }
+  if (!(await db.schema.hasColumn('devices', 'tenant_id'))) {
+    await db.schema.table('devices', (t) => t.integer('tenant_id').nullable());
+  }
+  if (!(await db.schema.hasColumn('videos', 'tenant_id'))) {
+    await db.schema.table('videos', (t) => t.integer('tenant_id').nullable());
+  }
+
+  // ===== 存量数据迁移 (幂等): 旧的「按用户归属」升级为「按租户归属」 =====
+  // devices.user_id → 为该用户建租户 → user 升级为租户管理员 → device 归租户
+  const legacyDevices = await db('devices').whereNotNull('user_id').whereNull('tenant_id');
+  for (const d of legacyDevices) {
+    const u = await db('users').where({ id: d.user_id }).first();
+    if (!u) { await db('devices').where({ id: d.id }).update({ user_id: null }); continue; }
+    let tid = u.tenant_id;
+    if (!tid) {
+      const [id] = await db('tenants').insert({ name: (u.display_name || u.username).slice(0, 60) });
+      tid = id;
+      await db('users').where({ id: u.id }).update({ tenant_id: tid, role: 'tenant_admin', permissions: null });
+    }
+    await db('devices').where({ id: d.id }).update({ tenant_id: tid, user_id: null });
+  }
+  // 素材: 上传者属于某租户 → 素材归租户
+  const tenantUsers = await db('users').whereNotNull('tenant_id');
+  const tmap = {}; tenantUsers.forEach((u) => { tmap[u.id] = u.tenant_id; });
+  const legacyVideos = await db('videos').whereNull('tenant_id').whereNotNull('uploader_id');
+  for (const v of legacyVideos) {
+    if (tmap[v.uploader_id]) await db('videos').where({ id: v.id }).update({ tenant_id: tmap[v.uploader_id] });
+  }
+  // 节目单/排期: owner_id 原为用户 id → 改为租户 id (列语义升级为 tenant_id)
+  for (const table of ['playlists', 'schedules']) {
+    const rows = await db(table).whereNotNull('owner_id');
+    for (const r of rows) {
+      if (tmap[r.owner_id]) await db(table).where({ id: r.id }).update({ owner_id: tmap[r.owner_id] });
+    }
+  }
 }
 
 module.exports = { migrate };
